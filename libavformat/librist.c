@@ -103,9 +103,20 @@ static int log_cb(void* arg, enum rist_log_level log_level, const char* msg)
     }
 
     av_log(arg, level, "%s", msg);
-
     return 0;
 }
+
+static int cb_stats(void* arg, const struct rist_stats* stats_container)
+{
+    av_log(arg, AV_LOG_VERBOSE, "%s\n\n", stats_container->stats_json);
+    rist_stats_free(stats_container);
+    return 0;
+}
+
+//static void connection_status_callback(void* arg, struct rist_peer* peer, enum rist_connection_status peer_connection_status)
+//{
+//    av_log(arg, AV_LOG_VERBOSE, "Connection Status changed for Peer %"PRIu64", new status is %d\n", peer, peer_connection_status);
+//}
 
 static int librist_close(URLContext* h)
 {
@@ -149,6 +160,14 @@ static int librist_open(URLContext* h, const char* uri, int flags)
     }
     if (ret < 0)
         goto err;
+
+    ret = rist_stats_callback_set(s->ctx, 1000, cb_stats, NULL);
+    if (ret < 0)
+        goto err;
+
+    //ret = rist_connection_status_callback_set(s->ctx, connection_status_callback, NULL);
+    //if (ret < 0)
+    //    goto err;
 
     char* saveptroutput;
     char* tmpoutputurl = malloc(strlen(uri) + 1);
