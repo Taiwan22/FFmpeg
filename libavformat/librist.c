@@ -16,10 +16,10 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-/**
- * @file
- * Reliable Internet Streaming Transport protocol
- */
+ /**
+  * @file
+  * Reliable Internet Streaming Transport protocol
+  */
 
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
@@ -36,9 +36,10 @@
 #include <librist/librist.h>
 #include <librist/version.h>
 
-// RIST_MAX_PACKET_SIZE - 28 minimum protocol overhead
+  // RIST_MAX_PACKET_SIZE - 28 minimum protocol overhead
 #define MAX_PAYLOAD_SIZE (10000-28)
 #define FIFO_SIZE_DEFAULT 8192
+#define MAX_PEER_COUNT 20
 
 typedef struct RISTContext {
     const AVClass *class;
@@ -53,9 +54,9 @@ typedef struct RISTContext {
     char *secret;
 
     struct rist_logging_settings logging_settings;
-    struct rist_peer_config peer_config;
+    struct rist_peer_config peer_config[MAX_PEER_COUNT];
 
-    struct rist_peer *peer;
+    struct rist_peer *peer[MAX_PEER_COUNT];
     struct rist_ctx *ctx;
 } RISTContext;
 
@@ -111,7 +112,8 @@ static int librist_close(URLContext *h)
     RISTContext *s = h->priv_data;
     int ret = 0;
 
-    s->peer = NULL;
+    for (size_t i = 0; i < MAX_PEER_COUNT; i++)
+        s->peer[i] = NULL;
 
     if (s->ctx)
         ret = rist_destroy(s->ctx);
@@ -124,7 +126,6 @@ static int librist_open(URLContext *h, const char *uri, int flags)
 {
     RISTContext *s = h->priv_data;
     struct rist_logging_settings *logging_settings = &s->logging_settings;
-    struct rist_peer_config *peer_config = &s->peer_config;
     int ret;
 
     if ((flags & AVIO_FLAG_READ_WRITE) == AVIO_FLAG_READ_WRITE)
@@ -149,42 +150,53 @@ static int librist_open(URLContext *h, const char *uri, int flags)
     if (ret < 0)
         goto err;
 
-    ret = rist_peer_config_defaults_set(peer_config);
-    if (ret < 0)
-        goto err;
+    char* saveptroutput;
+    char* tmpoutputurl = malloc(strlen(uri) + 1);
+    strcpy(tmpoutputurl, uri);
+    char* peertoken = strtok_r(tmpoutputurl, ",", &saveptroutput);
+    for (size_t i = 0; i < MAX_PEER_COUNT; i++) {
+        if (!peertoken)
+            break;
+        struct rist_peer_config* peer_config = &s->peer_config[i];
 
-    ret = rist_parse_address2(uri, &peer_config);
-    if (ret < 0)
-        goto err;
-
-    if (flags & AVIO_FLAG_READ) {
-        ret = rist_receiver_set_output_fifo_size(s->ctx, s->fifo_size);
-        if (ret != 0)
+        ret = rist_peer_config_defaults_set(peer_config);
+        if (ret < 0)
             goto err;
+
+        ret = rist_parse_address2(peertoken, &peer_config);
+        if (ret < 0)
+            goto err;
+
+        if (flags & AVIO_FLAG_READ) {
+            ret = rist_receiver_set_output_fifo_size(s->ctx, s->fifo_size);
+            if (ret != 0)
+                goto err;
+        }
+
+        if (((s->encryption == 128 || s->encryption == 256) && !s->secret) ||
+            ((peer_config->key_size == 128 || peer_config->key_size == 256) && !peer_config->secret[0])) {
+            av_log(h, AV_LOG_ERROR, "secret is mandatory if encryption is enabled\n");
+            librist_close(h);
+            return AVERROR(EINVAL);
+        }
+
+        if (s->secret && peer_config->secret[0] == 0)
+            av_strlcpy(peer_config->secret, s->secret, RIST_MAX_STRING_SHORT);
+
+        if (s->secret && (s->encryption == 128 || s->encryption == 256))
+            peer_config->key_size = s->encryption;
+
+        if (s->buffer_size) {
+            peer_config->recovery_length_min = s->buffer_size;
+            peer_config->recovery_length_max = s->buffer_size;
+        }
+
+        ret = rist_peer_create(s->ctx, &s->peer[i], &s->peer_config[i]);
+        if (ret < 0)
+            goto err;
+        peertoken = strtok_r(NULL, ",", &saveptroutput);
     }
-
-    if (((s->encryption == 128 || s->encryption == 256) && !s->secret) ||
-        ((peer_config->key_size == 128 || peer_config->key_size == 256) && !peer_config->secret[0])) {
-        av_log(h, AV_LOG_ERROR, "secret is mandatory if encryption is enabled\n");
-        librist_close(h);
-        return AVERROR(EINVAL);
-    }
-
-    if (s->secret && peer_config->secret[0] == 0)
-        av_strlcpy(peer_config->secret, s->secret, RIST_MAX_STRING_SHORT);
-
-    if (s->secret && (s->encryption == 128 || s->encryption == 256))
-        peer_config->key_size = s->encryption;
-
-    if (s->buffer_size) {
-        peer_config->recovery_length_min = s->buffer_size;
-        peer_config->recovery_length_max = s->buffer_size;
-    }
-
-    ret = rist_peer_create(s->ctx, &s->peer, &s->peer_config);
-    if (ret < 0)
-        goto err;
-
+    free(tmpoutputurl);
     ret = rist_start(s->ctx);
     if (ret < 0)
         goto err;
@@ -219,8 +231,8 @@ static int librist_read(URLContext *h, uint8_t *buf, int size)
     if (data_block->flags & RIST_DATA_FLAGS_OVERFLOW) {
         if (!s->overrun_nonfatal) {
             av_log(h, AV_LOG_ERROR, "Fifo buffer overrun. "
-                    "To avoid, increase fifo_size option. "
-                    "To survive in such case, use overrun_nonfatal option\n");
+                "To avoid, increase fifo_size option. "
+                "To survive in such case, use overrun_nonfatal option\n");
             size = AVERROR(EIO);
             goto out_free;
         }
