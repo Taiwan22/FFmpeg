@@ -60,6 +60,8 @@ typedef struct RISTContext {
     struct rist_ctx* ctx;
 } RISTContext;
 
+//static FILE* rist_statfile;
+
 #define D AV_OPT_FLAG_DECODING_PARAM
 #define E AV_OPT_FLAG_ENCODING_PARAM
 #define OFFSET(x) offsetof(RISTContext, x)
@@ -108,7 +110,24 @@ static int log_cb(void* arg, enum rist_log_level log_level, const char* msg)
 
 static int cb_stats(void* arg, const struct rist_stats* stats_container)
 {
-    av_log(arg, AV_LOG_VERBOSE, "%s\n\n", stats_container->stats_json);
+    if (arg == NULL)
+    {
+        av_log(arg, AV_LOG_VERBOSE, "%s\n\n", stats_container->stats_json);
+    }
+    else
+    {
+        FILE* file = fopen((char*)arg, "a");
+        if (file == NULL) {
+            av_log(NULL, AV_LOG_ERROR, "Failed to open statfile \"%s\": %s\n",
+                (char*)arg, strerror(errno));
+        }
+        else
+        {
+            fprintf(file, "%s\n\n", stats_container->stats_json);
+            fflush(file);
+            fclose(file);
+        }
+    }
     rist_stats_free(stats_container);
     return 0;
 }
@@ -129,6 +148,9 @@ static int librist_close(URLContext* h)
     if (s->ctx)
         ret = rist_destroy(s->ctx);
     s->ctx = NULL;
+
+    //if (rist_statfile)
+    //    fclose(rist_statfile);
 
     return risterr2ret(ret);
 }
@@ -161,9 +183,19 @@ static int librist_open(URLContext* h, const char* uri, int flags)
     if (ret < 0)
         goto err;
 
-    ret = rist_stats_callback_set(s->ctx, 1000, cb_stats, NULL);
+    ret = rist_stats_callback_set(s->ctx, s->statsinterval, cb_stats, s->statfilepath);
     if (ret < 0)
         goto err;
+
+    //if (s->statfilepath)
+    //{
+    //    rist_statfile = fopen(s->statfilepath, "w");
+    //    if (rist_statfile == NULL) {
+    //        av_log(NULL, AV_LOG_ERROR, "Failed to open statfile \"%s\": %s\n",
+    //            s->statfilepath, strerror(errno));
+    //        goto err;
+    //    }
+    //}
 
     //ret = rist_connection_status_callback_set(s->ctx, connection_status_callback, NULL);
     //if (ret < 0)

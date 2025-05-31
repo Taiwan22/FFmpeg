@@ -43,3 +43,7 @@
 /tools/python/__pycache__/
 /.vs
 /.gitignore
+/ffmpeg.sln
+/ffmpeg.vcxproj
+/ffmpeg.vcxproj.filters
+/ffmpeg.vcxproj.user
