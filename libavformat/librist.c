@@ -51,7 +51,9 @@ typedef struct RISTContext {
     int encryption;
     int fifo_size;
     int overrun_nonfatal;
-    char *secret;
+    int statsinterval;
+    char* secret;
+    char* statfilepath;
 
     struct rist_logging_settings logging_settings;
     struct rist_peer_config peer_config[MAX_PEER_COUNT];
@@ -59,6 +61,8 @@ typedef struct RISTContext {
     struct rist_peer *peer[MAX_PEER_COUNT];
     struct rist_ctx *ctx;
 } RISTContext;
+
+//static FILE* rist_statfile;
 
 #define D AV_OPT_FLAG_DECODING_PARAM
 #define E AV_OPT_FLAG_ENCODING_PARAM
@@ -75,6 +79,8 @@ static const AVOption librist_options[] = {
     { "log_level",   "set loglevel",    OFFSET(log_level),   AV_OPT_TYPE_INT,   {.i64=RIST_LOG_INFO},        -1, INT_MAX, .flags = D|E },
     { "secret", "set encryption secret",OFFSET(secret),      AV_OPT_TYPE_STRING,{.str=NULL},                  0, 0,       .flags = D|E },
     { "encryption","set encryption type",OFFSET(encryption), AV_OPT_TYPE_INT   ,{.i64=0},                     0, INT_MAX, .flags = D|E },
+    { "statsinterval","set statistics interval(ms) 0-disable",OFFSET(statsinterval), AV_OPT_TYPE_INT   ,{.i64 = 1000},0, INT_MAX, .flags = D|E },
+    { "statfile","set file to output json statistics",OFFSET(statfilepath), AV_OPT_TYPE_STRING   ,{.str = NULL},    0, 0,       .flags = D|E },
     { NULL }
 };
 
@@ -108,7 +114,24 @@ static int log_cb(void *arg, enum rist_log_level log_level, const char *msg)
 
 static int cb_stats(void* arg, const struct rist_stats* stats_container)
 {
-    av_log(arg, AV_LOG_VERBOSE, "%s\n\n", stats_container->stats_json);
+    if (arg == NULL)
+    {
+        av_log(arg, AV_LOG_VERBOSE, "%s\n\n", stats_container->stats_json);
+    }
+    else
+    {
+        FILE* file = fopen((char*)arg, "a");
+        if (file == NULL) {
+            av_log(NULL, AV_LOG_ERROR, "Failed to open statfile \"%s\": %s\n",
+                (char*)arg, strerror(errno));
+        }
+        else
+        {
+            fprintf(file, "%s\n\n", stats_container->stats_json);
+            fflush(file);
+            fclose(file);
+        }
+    }
     rist_stats_free(stats_container);
     return 0;
 }
@@ -129,6 +152,9 @@ static int librist_close(URLContext* h)
     if (s->ctx)
         ret = rist_destroy(s->ctx);
     s->ctx = NULL;
+
+    //if (rist_statfile)
+    //    fclose(rist_statfile);
 
     return risterr2ret(ret);
 }
@@ -161,9 +187,19 @@ static int librist_open(URLContext *h, const char *uri, int flags)
     if (ret < 0)
         goto err;
 
-    ret = rist_stats_callback_set(s->ctx, 1000, cb_stats, NULL);
+    ret = rist_stats_callback_set(s->ctx, s->statsinterval, cb_stats, s->statfilepath);
     if (ret < 0)
         goto err;
+
+    //if (s->statfilepath)
+    //{
+    //    rist_statfile = fopen(s->statfilepath, "w");
+    //    if (rist_statfile == NULL) {
+    //        av_log(NULL, AV_LOG_ERROR, "Failed to open statfile \"%s\": %s\n",
+    //            s->statfilepath, strerror(errno));
+    //        goto err;
+    //    }
+    //}
 
     //ret = rist_connection_status_callback_set(s->ctx, connection_status_callback, NULL);
     //if (ret < 0)
