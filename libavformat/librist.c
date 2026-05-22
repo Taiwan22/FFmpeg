@@ -36,6 +36,11 @@
 #include <librist/librist.h>
 #include <librist/version.h>
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
   // RIST_MAX_PACKET_SIZE - 28 minimum protocol overhead
 #define MAX_PAYLOAD_SIZE (10000-28)
 #define FIFO_SIZE_DEFAULT 8192
@@ -112,27 +117,37 @@ static int log_cb(void *arg, enum rist_log_level log_level, const char *msg)
     return 0;
 }
 
-static int cb_stats(void* arg, const struct rist_stats* stats_container)
+static int cb_stats(void* arg, uint16_t version, char* stats_json, uint32_t json_size)
 {
-    if (arg == NULL)
-    {
-        av_log(arg, AV_LOG_VERBOSE, "%s\n\n", stats_container->stats_json);
-    }
-    else
-    {
-        FILE* file = fopen((char*)arg, "a");
-        if (file == NULL) {
+    (void)version;
+
+    if (arg == NULL) {
+        av_log(NULL, AV_LOG_VERBOSE, "%s\n\n", stats_json);
+    } else {
+        const char *path = (const char *)arg;
+        /* Open with O_NONBLOCK so that opening a FIFO (named pipe) that has
+         * no reader yet does not block, and opening a regular file works as
+         * normal.  O_WRONLY|O_CREAT|O_APPEND covers both the FIFO and the
+         * regular-file cases. */
+        int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_NONBLOCK, 0644);
+        if (fd < 0) {
             av_log(NULL, AV_LOG_ERROR, "Failed to open statfile \"%s\": %s\n",
-                (char*)arg, strerror(errno));
-        }
-        else
-        {
-            fprintf(file, "%s\n\n", stats_container->stats_json);
-            fflush(file);
-            fclose(file);
+                   path, strerror(errno));
+        } else {
+            /* Switch back to blocking I/O for the actual write so that a
+             * slow reader on the other end of a FIFO gets all the data. */
+            int flags = fcntl(fd, F_GETFL);
+            if (flags >= 0)
+                fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+
+            char newline[] = "\n\n";
+            if (write(fd, stats_json, json_size) < 0 ||
+                write(fd, newline, sizeof(newline) - 1) < 0)
+                av_log(NULL, AV_LOG_ERROR, "Failed to write stats to \"%s\": %s\n",
+                       path, strerror(errno));
+            close(fd);
         }
     }
-    rist_stats_free(stats_container);
     return 0;
 }
 
@@ -187,7 +202,7 @@ static int librist_open(URLContext *h, const char *uri, int flags)
     if (ret < 0)
         goto err;
 
-    ret = rist_stats_callback_set(s->ctx, s->statsinterval, cb_stats, s->statfilepath);
+    ret = rist_sender_stats_callback_set(s->ctx, s->statsinterval, cb_stats, s->statfilepath);
     if (ret < 0)
         goto err;
 
